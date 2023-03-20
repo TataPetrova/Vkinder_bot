@@ -88,7 +88,7 @@ class Vkinder:
             if response is not None:
                 return response
             else:
-                print("get_photos() function has returned None object")
+                print("test_photos() function has returned None object")
                 pass
 
 
