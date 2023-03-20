@@ -2,7 +2,7 @@ import sqlalchemy as sq
 from sqlalchemy.orm import declarative_base, sessionmaker
 import psycopg2
 
-DSN = "postgresql://postgres:@localhost:5432/vkinder"
+DSN = "postgresql://postgres:30051986@localhost:5432/vkinder"
 Base = declarative_base()
 
 def work_list(tablename):
