@@ -1,180 +1,202 @@
-from datetime import date
-
-from sqlalchemy import event
+from random import randrange
+import vk_db as db
+import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
-from vk_api.utils import get_random_id
-
-from vk_db import *
-from vk import *
-
+from datetime import datetime
+from vk_api.exceptions import ApiError
+from sqlalchemy.exc import IntegrityError
 
 with open("token_group.txt", "r") as file:
     bot_token = file.read().strip()
+with open("user_token.txt", "r") as file:
+    user_token = file.read().strip()
+
 
 vk_session = vk_api.VkApi(token=bot_token)
+user_vk = vk_api.VkApi(token=user_token)
 longpoll = VkLongPoll(vk_session)
-vk = vk_session.get_api()
 
-def write_msg(user_id, message, attachment = None):
-    vk_session.method("messages.send", {"user_id": user_id, "message": message,
-                                        "attachment": attachment,  "random_id": get_random_id()})
 
-removal = 0
-all_user = []
-total_couple = []
+def write_msg(user_id, message, attachment=''):
+    vk_session.method('messages.send', {'user_id': user_id, 'message': message, 'random_id': randrange(10 ** 7),
+                                    'attachment': attachment})
 
-def get_user():
 
-    for event in longpoll.listen():
-            if event.type == VkEventType.MESSAGE_NEW and event.to_me and event.text:
-                try:
-                    request = event.text
-                    if request.lower() == "старт" or request.lower() == "start":
-                        write_msg(event.user_id, 'Начнём искать вторую половинку - введи "поиск" ')
-                        user_id = event.user_id
-                        user = (utilizer_vk.test_params(user_ids=user_id)["response"][0])
-                        if "bdate" not in user.keys():
-                            write_msg(event.user_id, f'Чего-то не хватает.'
-                                                     f' Укажите дату рождения в настройках своего профиля\
-                                                        и разрешите её показ')
-                            continue
-                        if "city" not in user.keys():
-                            write_msg(event.user_id,
-                                    f'Чего-то не хватает. Укажите в профиле город своего проживания')
-                            continue
+class VK:
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.pair_id = 0
+        self.user = db.MainUser
+        self.offset = 0
+        self.pair_id = 0
+        self.pair_name = ''
+        self.best_photo = ''
+
+
+    def data(self):
+        info = vk_session.method("users.get", {"user_ids": self.user_id,
+                                           "fields": 'sex, bdate, city, relation'})
+        return info
+
+
+    def name(self):
+        name = self.data()[0]['first_name']
+        return name
+
+
+    def age(self):
+        if 'bdate' in self.data()[0].keys():
+            bdate = self.data()[0]['bdate']
+            if bdate is not None and len(bdate.split('.')) == 3:
+                birth = datetime.strptime(bdate, '%d.%m.%Y').year
+                this = datetime.now().year
+                age = this - birth
+                return age
+            else:
+                return 'Данные отсутствуют'
+        else:
+            return 'Данные отсутствуют'
+
+
+    def sex(self):
+        sex = self.data()[0]['sex']
+        if sex == 1:
+            return 2
+        elif sex == 2:
+            return 1
+        else:
+            return 0
+
+
+    def city(self):
+        if 'city' in self.data()[0].keys():
+            city = self.data()[0]['city']['id']
+            return city
+        else:
+            return 0
+
+
+    def relation(self):
+        if 'relation' in self.data()[0].keys():
+            relation = self.data()[0]['relation']
+            return relation
+        else:
+            return 'Данные о семейном положении отсутствуют!'
+
+
+    def start(self):
+        db.create_tables()
+        self.name()
+        self.age()
+        self.city()
+        self.relation()
+        try:
+            self.user = db.MainUser(vk_id=self.user_id, name=self.name(), age=self.age(),
+                                    city=self.city(), relation=self.relation())
+            db.append_user(self.user)
+        except IntegrityError:
+            pass
+        self.detect_pair()
+        self.test_best_photo()
+        write_msg(event.user_id, f'Твоя пара:\n'
+                                 f'Имя: {self.pair_name}, ссылка: vk.com/id{self.pair_id}', self.best_photo)
+        return self.pair()
+
+
+    def pair(self):
+        write_msg(event.user_id, f'Введи ДАЛЕЕ, чтобы продолжить поиск, '
+                                 f'или СТОП, если не хочешь остановить поиск, или ПРОПУСТИТЬ, '
+                                 f'и искать следующего.')
+        while True:
+            for new_event in longpoll.listen():
+                if new_event.type == VkEventType.MESSAGE_NEW and event.to_me:
+                    if new_event.message.lower() == 'далее':
                         try:
-                            user
-                        except vk_api.exceptions.ApiError:
-                            write_msg(event.user_id, f'Что-то пошло не так')
-                            continue
-                        else:
-                            if user is not None:
-                                total_couple.clear()
-                                all_user.clear()
-                                all_user.append(user)
-                            else:
-                                write_msg(event.user_id, 'Что-то пошло не так.\
-                                                            Проверьте настройки учётной записи ')
-                    if request.lower() == "поиск" or request.lower() == "search":
-                        write_msg(event.user_id, 'Для подтверждения поиска введите "поиск" ')
-                        user = (utilizer_vk.test_params(user_ids=event.user_id)["response"][0])
-                        if user is not None:
-                            all_user.clear()
-                            all_user.append(user)
-                except:
-                    write_msg(event.user_id, f'Что-то пошло не так ')
-                break
+                            make_pair = db.CoupleUser(vk_id=self.pair_id, name=self.pair_name,
+                                                         id_main_user=self.user_id)
+                            db.append_user(make_pair)
+                        except IntegrityError:
+                            pass
+                        write_msg(event.user_id, 'Ищу следующую пару...')
+                        self.offset += 1
+                        self.detect_pair()
+                        self.test_best_photo()
+                        write_msg(event.user_id, f'Твоя пара:\n'
+                                                 f'Имя: {self.pair_name}, ссылка: vk.com/id{self.pair_id}',
+                                  self.best_photo)
+                        return self.pair()
+                    elif new_event.message.lower() == 'стоп' or new_event.message.lower() == 'нет':
+                        write_msg(event.user_id, 'Поиск завершён, если передумал введи ПРОДОЛЖИТЬ.')
+                    elif new_event.message.lower() == 'продолжить' or new_event.message.lower() == 'пропустить':
+                        write_msg(event.user_id, f'Подыскиваю следующую пару...')
+                        self.offset += 1
+                        self.detect_pair()
+                        self.test_best_photo()
+                        write_msg(event.user_id, f'Твоя пара:\n'
+                                                 f'Имя: {self.pair_name}, ссылка: vk.com/id{self.pair_id}',
+                                  self.best_photo)
+                        return self.pair()
 
-def matchmaking():
 
-    if all_user[0] is not None:
-        birth_year = int(all_user[0]["bdate"][-4:])
-        stream_year = date.today().year
-        age = stream_year - birth_year
-
-        sex = 0
-        if all_user[0]["sex"] == 1:
-            sex += 2
+    def detect_pair(self):
+        resp = user_vk.method('users.search', {'count': 1, 'city': self.city(), 'sex': self.sex(), 'age': self.age(),
+                                               'relation': self.relation(), 'offset': self.offset, 'status': (1, 6),
+                                               'has photo': 1, 'fields': 'is_closed'})
+        if resp['items'][0]['id'] in db.control_user():
+            self.offset += 1
+            self.detect_pair()
         else:
-            sex += 1
-        user_city = all_user[0]["city"]["id"]
-        relation = all_user[0]["relation"]
-        try:
-            shown_people = utilizer_vk.test_people(age - 1, age + 1, sex, user_city, relation, removal)
-        except vk_api.exceptions.ApiError:
-            write_msg(event.user_id, f'Что-то пошло не так')
-        else:
-            if shown_people is not None:
-                return shown_people
+            if resp['items']:
+                for pair in resp['items']:
+                    if pair['is_closed']:
+                        self.offset += 1
+                        self.detect_pair()
+                    else:
+                        self.pair_id = pair['id']
+                        self.pair_name = pair['first_name']
             else:
-                write_msg(event.user_id, f'Не удалось найти подходящую пару.\
-                                повторите попытку позже')
-    else:
-        write_msg(event.user_id, f'Не удалось осуществить поиск')
+                self.offset += 1
+                self.detect_pair()
 
-def collection_with_id():
 
-    people_ids = []
-    for people in matchmaking():
-        if people['is_closed'] == False:
-            people_info = (people["id"], f'{people["first_name"]} {people["last_name"]}')
-            if people_info is not None:
-                people_ids.append(people_info)
-    return people_ids
-
-def collection_with_foto():
-
-    whole_info = []
-    for couple in collection_with_id():
-        couple_name = couple[1]
-        try:
-            id_couple = f'https://vk.com/id{utilizer_vk.test_photos(owner_id=str(couple[0]))[1]}'
-            all_photos = utilizer_vk.test_photos(owner_id=str(couple[0]))[0]
-        except vk_api.exceptions.ApiError:
-            write_msg(event.user_id, f'Ошибка api Вконтакте')
-
-        photos_ids = {}
-        if all_photos is not None:
-            if len(all_photos) >= 3:
-                for photo in all_photos:
-                    photos_ids[(photo["id"])] = photo["comments"]["count"] + photo["likes"][
-                                 "count"] + photo["likes"]["user_likes"]
-            else:
+    def test_best_photo(self):
+        photo_list = []
+        resp = user_vk.method('photos.get', {'owner_id': self.pair_id,
+                                             'album_id': 'profile',
+                                             'access_token': user_token,
+                                             'extended': 1,
+                                             'v': '5.131'})
+        photos = []
+        for photo in resp['items']:
+            photo_info = {'id': photo['id'], 'owner_id': photo['owner_id'], }
+            count = 0
+            try:
+                count_com = user_vk.method('photos.getComments', {'owner_id': self.pair_id, 'photo_id': photo['id']})
+                count = count_com['count']
+            except ApiError:
                 pass
-        else:
-            write_msg(event.user_id, f'не удалось найти фотографии для показа. Повторите поиск')
-        sorted_ids = (sorted(photos_ids.items(), key=lambda x: x[1]))[-3:]
-        only_ids = []
-        for id in sorted_ids:
-            only_ids.append(f'photo{id_couple[17:]}_{id[0]}')
-        info = (couple_name, id_couple, only_ids)
-        whole_info.append(info)
-    return whole_info
+            photo_info['popular'] = photo['likes']['count'] + count
+            photo_list.append(photo_info)
+        photo_list = sorted(photo_list, key=lambda k: k['popular'], reverse=True)
+        for i in photo_list:
+            photos.append(f"photo{i['owner_id']}_{i['id']}")
+        self.best_photo = ','.join(photos[:3])
+        return self.best_photo
 
-def all_go():
 
-    global removal
+if __name__ == '__main__':
     for event in longpoll.listen():
-            if event.type == VkEventType.MESSAGE_NEW and event.to_me and event.text:
-                request = event.text
-                matchmaking()
-                collection_with_id()
-                collection_with_foto()
-
-                for couple in collection_with_foto():
-                    if couple not in total_couple and couple is not None:
-                        total_couple.append(couple)
-                        try:
-                            write_msg(event.user_id, message=f'Ваша пара - {couple[0]}, {couple[1]}',
-                                            attachment=f'{couple[2][0]},{couple[2][1]},{couple[2][2]}')
-                            user_table_name = f'id{event.user_id}'
-                            couple_id = f'{couple[1][15:]}'
-
-                            engine = sq.create_engine(DSN)
-                            Session = sessionmaker(bind=engine)
-                            session = Session()
-                            User = work_list(user_table_name)
-                            work_table(engine)
-                            try:
-                                table_columns = User(id_couple=couple_id, name_couple=couple[0])
-                                session.add(table_columns)
-                                session.commit()
-                            except:
-                                pass
-                            session.close()
-                        except:
-                            continue
-
-                removal += 50
-                write_msg(event.user_id, 'для продолжения поиска введите "поиск" ')
-
-def run_bot():
-    get_user()
-    while True:
-        all_go()
-
-
-
-
-
-run_bot()
+        if event.type == VkEventType.MESSAGE_NEW and event.to_me:
+            bot = VK(event.user_id)
+            bot.data()
+            req = event.text.lower()
+            if req == 'привет' or req == 'ghbdtn':
+                write_msg(event.user_id, 'Чтобы начать поиск введи Старт, если передумал искать пару, напиши СТОП.')
+            elif req == 'старт':
+                write_msg(event.user_id, f"Идет поиск, {bot.name()}. Пожалуйста, ожидай...")
+                bot.start()
+            elif req == 'стоп' or req == 'нет':
+                write_msg(event.user_id, f'Bye,Bye, {bot.name()}, но если передумал, введи СТАРТ.')
+            else:
+                write_msg(event.user_id, f'Не понял вашего ответа, {bot.name()}, Для начала поздороваемся - '
+                                         f'Привет, {bot.name()}.')
