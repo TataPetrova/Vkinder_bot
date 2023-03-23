@@ -1,23 +1,49 @@
 import sqlalchemy as sq
-from sqlalchemy.orm import declarative_base, sessionmaker
-import psycopg2
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
 
-DSN = "postgresql://postgres:30051986@localhost:5432/vkinder"
 Base = declarative_base()
-
-def work_list(tablename):
-    class User(Base):
-        __tablename__ = tablename
-        __table_args__ = {"schema": "vkinder_database", 'extend_existing': True}
-
-        id_couple = sq.Column(sq.String(length=15), primary_key=True, unique=True)
-        name_couple = sq.Column(sq.String(length=40))
-
-        def __init__(self, id_couple, name_couple):
-            self.id_couple = id_couple
-            self.name_couple = name_couple
-    return User
+db = 'postgresql://postgres:30051986@localhost:5432/VKinder'
+engine = sq.create_engine(db)
+Session = sessionmaker(bind=engine)
+session = Session()
 
 
-def work_table(engine):
+class MainUser(Base):
+    __tablename__ = 'main_user'
+    id = sq.Column(sq.Integer, primary_key=True)
+    vk_id = sq.Column(sq.Integer, unique=True)
+    name = sq.Column(sq.String)
+    age = sq.Column(sq.String)
+    city = sq.Column(sq.String)
+    relation = sq.Column(sq.String)
+    vapor = relationship('CoupleUser', back_populates='main_user')
+
+
+class CoupleUser(Base):
+    __tablename__ = 'couple_user'
+    id = sq.Column(sq.Integer, primary_key=True)
+    vk_id = sq.Column(sq.Integer, unique=True)
+    name = sq.Column(sq.String)
+    id_main_user = sq.Column(sq.Integer, sq.ForeignKey('main_user.vk_id'))
+    main_user = relationship(MainUser)
+
+
+def create_tables():
     Base.metadata.create_all(engine)
+
+
+def append_user(user):
+    try:
+        session.expire_on_commit = False
+        session.add(user)
+        session.commit()
+    except:
+        session.rollback()
+        raise
+
+
+def control_user():
+    users = session.query(CoupleUser).all()
+    users_list = [couple_id.vk_id for couple_id in users]
+    return users_list
