@@ -266,3 +266,6 @@ def run_bot():
     get_user()
     while True:
         all_go()
+        
+
+run_bot()       
