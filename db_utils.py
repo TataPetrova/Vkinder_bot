@@ -1,7 +1,7 @@
 """
 Файл с описанием класса подклюения к БД
 """
-# pylint: disable = import-error, invalid-name, line-too-long
+
 import psycopg2
 
 
