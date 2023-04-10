@@ -3,19 +3,20 @@
 """
 
 import vk_api
-import psycopg2
 
 from vk_api.exceptions import ApiError
 
 import messages
+from db_utils import Saver
 from config import user_token
+
 # Токен пользователя для поиска
 VK_USER_TOKEN = user_token
 
 
 class VKinder:
     """
-    Класс для поиска пользователей
+    Класс для поиска пользоавтелей
     """
     def __init__(self, token):
         self.session = self.get_vk_session(token)
@@ -94,9 +95,10 @@ class VKinderBot:
     def __init__(self, token, **kwargs):
         self.session = self.get_vk_session(token)
         self.api = self.session.get_api()
-        self.top_users = 4
+        self.top_users = 2
         self.user_data_cache = {}
         self.user_data = Saver(**kwargs)
+        self.vkinder = None
 
     def send_photos_and_link(self, user_id, photos, link):
         """
@@ -159,8 +161,24 @@ class VKinderBot:
         :param user_id: Id пользователя
         :return:        Статус пользователя в боте
         """
+        if 'profiles' in self.user_data_cache[user_id]:
+            # Сохраняем результаты в бд
+            self.user_data.save_session_to_db(user_id, [profile['id'] for profile in
+                                                        self.user_data_cache[user_id]['profiles']])
+
         self.send_message(user_id, messages.final_status)
         return "final"
+
+    def get_next_profile(self, user_id):
+        """
+        Возвращает следующую анкету из сохраненных для данного пользователя.
+
+        :param user_id: int, идентификатор пользователя.
+        :return: dict, информация об анкете или None, если анкеты закончились.
+        """
+        if not self.user_data_cache[user_id].get('profiles'):
+            return None
+        return self.user_data_cache[user_id]['profiles'].pop(-1)
 
     def process_message(self, event):
         """
@@ -179,10 +197,22 @@ class VKinderBot:
             current_step = "again" if self.user_data_cache[event.user_id]['in_db'] else None
         else:
             current_step = current_step['step']
+
         # Если начальный шаг, поздороваемся
         if current_step is None:
             self.send_message(event.user_id, messages.greet_status)
             next_step = self.process_age(event.user_id)
+        # Если пользователь вводит команду "еще", отправьте следующую анкету
+        elif event.text.lower() == "еще" and current_step == 'final':
+            next_profile = self.get_next_profile(event.user_id)
+            if next_profile:
+                top_photos = self.vkinder.get_top_photos(next_profile["id"])
+                self.send_photos_and_link(event.user_id, top_photos, f"https://vk.com/id{next_profile['id']}")
+                next_step = "final"
+            else:
+                self.send_message(event.user_id, 'Больше анкет нет. Хочешь еще? Напиши "Заново"')
+                next_step = None
+
         # Иначе поищем его статус
         elif self.is_valid_input(event.text, current_step):
             if current_step == "again":
@@ -213,14 +243,29 @@ class VKinderBot:
                     return
 
                 # Инициализируем объект поиска
-                vkinder = VKinder(token)
+                self.vkinder = VKinder(token)
                 # Ищем пользователей
                 try:
-                    users = vkinder.search_users(age, gender, city, status)
+                    users = self.vkinder.search_users(age, gender, city, status)
                 except ApiError:
                     self.send_message(user_id, messages.session_error)
                     return
 
+                # Сохраняем пользователей в кэше
+                self.user_data_cache[event.user_id]['profiles'] = [user for user in users if
+                                                                   not user.get('is_closed', True) and user['id'] not in
+                                                                   self.user_data_cache[event.user_id]['in_db']][
+                                                                  :self.top_users]
+
+                # Сохраняем статус и найденных пользователей
+                next_step = self.final_status(event.user_id)
+
+                # Отправляем первую анкету, если она есть
+                next_profile = self.get_next_profile(event.user_id)
+                if next_profile:
+                    top_photos = self.vkinder.get_top_photos(next_profile["id"])
+                    self.send_photos_and_link(user_id, top_photos, f"https://vk.com/id{next_profile['id']}")
+                """
                 # Список пользователей для сохранения в бд
                 for_save = []
                 # Выводим первых n пользователей
@@ -234,18 +279,20 @@ class VKinderBot:
                             for_save.append(user['id'])
                             top_photos = vkinder.get_top_photos(user["id"])
                             self.send_photos_and_link(user_id, top_photos, f"https://vk.com/id{user['id']}")
-
+                
                 self.final_status(event.user_id)
                 # Сохраняем результаты в бд
                 self.user_data.save_session_to_db(user_id, for_save)
                 # Удалим данные о пользователе из кэша
                 del self.user_data_cache[user_id]
+                
                 # Выход из функции
                 return
+                """
             # Попрощаемся
             else:
                 self.send_message(event.user_id, messages.some_error)
-                next_step = self.final_status(event.user_id)
+                next_step = "final"
         # Если что-то не так, напишем пользователю
         else:
             self.send_message(event.user_id, messages.incorrect_data)
@@ -275,8 +322,12 @@ class VKinderBot:
         :param step: Шаг
         :return:     True, если корректно, иначе False
         """
-        if step == "again":
-            return text == 'Заново'
+        if step == "again" or step == 'final':
+            print(step, 'asd')
+            print(text.lower() == 'заново')
+
+            print(text.lower())
+            return text.lower() == 'заново'
         if step == "age":
             # Проверяем, что число, входит в промежуток доступных возрастов, а также
             # что не float
@@ -290,111 +341,3 @@ class VKinderBot:
         if step == "final":
             return text == 'Заново'
         return False
-
-
-class Saver:
-    """
-    Сохранения состояния пользователя
-    """
-    # pylint: disable = too-many-arguments
-    def __init__(self, connstr=None, database='user_data', user='admin',
-                 password='password', host='127.0.0.1', port=80, table='searched_users'):
-        """
-        Создает соединение с базой данных PostgreSQL.
-        """
-
-        if connstr is not None:
-            try:
-                self.connection = psycopg2.connect(connstr)
-            except psycopg2.ProgrammingError as e:
-                print(f"Ошибка при подключении к базе данных: {e}")
-                self.connection = None
-                return
-        else:
-            try:
-                self.connection = psycopg2.connect(
-                    database=database,
-                    user=user,
-                    password=password,
-                    host=host,
-                    port=port
-                )
-            except psycopg2.ProgrammingError as e:
-                print(f"Ошибка при подключении к базе данных: {e}")
-                self.connection = None
-                return
-
-        # Задаем название таблицы
-        self.table = table
-        self.check_table()
-        print('Успешное подключение к базе данных!')
-
-    def create_table(self):
-        """
-        Создание таблицы
-        """
-        with self.connection.cursor() as cursor:
-            query = f"""CREATE TABLE IF NOT EXISTS {self.table} (
-                user_id INTEGER PRIMARY KEY,
-                searched_users INTEGER[] NOT NULL
-            );
-            """
-
-            cursor.execute(query)
-            self.connection.commit()
-
-    def check_table(self):
-        """
-        Интерактивная проверка существования таблицы
-        :return:
-        """
-        with self.connection.cursor() as cursor:
-            cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s);", (self.table,))
-            result = cursor.fetchone()
-            if result[0]:
-                print('База существует, запускаю бота')
-                return
-            else:
-                i = None
-                # Просим ввод пользователя
-                while i not in ['Y', 'N']:
-                    # Вводим, пока не Y или N
-                    i = input('Базы нет, создаем? Y/N ')
-                # Выполняем действие
-                if i == 'Y':
-                    self.create_table()
-                    print('Таблица создана, запускаю бота!')
-                else:
-                    print('Выхожу...')
-                    exit()
-
-    def save_session_to_db(self, user_id, searched_users):
-        """
-        Сохраняет или обновляет сессию пользователя в базе данных
-        :param user_id:          Id пользователя ВКонтакте.
-        :param searched_users:   Найденные пользователи
-        """
-        with self.connection.cursor() as cursor:
-            cursor.execute(
-                f"""
-                INSERT INTO {self.table} (user_id, searched_users)
-                VALUES (%s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    searched_users = {self.table}.searched_users || %s;
-                """,
-                (user_id, searched_users, searched_users)
-            )
-            self.connection.commit()
-
-    def get_user_data_from_db(self, user_id):
-        """
-        Извлечение данных о пользователе из базы данных
-        :param user_id: Id пользователя
-        :return:        list при существовании данных, иначе None
-        """
-        with self.connection.cursor() as cursor:
-            cursor.execute(f" SELECT searched_users FROM {self.table} WHERE user_id = %s;", (user_id,))
-            result = cursor.fetchone()
-
-        # Если есть данные
-        return result[0] if result else []
