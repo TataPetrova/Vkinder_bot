@@ -29,7 +29,6 @@ def main():
     # Для каждого сообщения
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW and event.to_me and event.from_user and event.text:
-            print(event.text)
             vkinder_bot.process_message(event)
 
 
