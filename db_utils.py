@@ -1,7 +1,7 @@
 """
 Файл с описанием класса подклюения к БД
 """
-
+# pylint: disable = import-error, invalid-name, line-too-long
 import psycopg2
 
 
@@ -87,6 +87,7 @@ class Saver:
         :param user_id:          Id пользователя ВКонтакте.
         :param searched_users:   Найденные пользователи
         """
+        print(searched_users)
         with self.connection.cursor() as cursor:
             cursor.execute(
                 f"""
