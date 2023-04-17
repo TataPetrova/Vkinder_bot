@@ -80,6 +80,11 @@ class VKinder:
         api = self.session.get_api()
         # Получаем фото пользователя
         photos = api.photos.getAll(owner_id=user_id, extended=1)
+        try:
+            if photos['count'] == 0:
+                return None
+        except:
+            return None
         # Сортируем по популярности
         popular_photos = sorted(
             photos["items"], key=lambda x: x["likes"]["count"], reverse=True
@@ -117,7 +122,11 @@ class VKinderBot:
         :param user_id: Id пользователя
         :param message: Сообщение
         """
-        self.api.messages.send(user_id=user_id, message=message, random_id=0)
+        try:
+            self.api.messages.send(user_id=user_id, message=message, random_id=0)
+        except ApiError:
+            # Если ошибка `Flood control`, пропускаем
+            pass
 
     def process_age(self, user_id):
         """
@@ -162,10 +171,13 @@ class VKinderBot:
         :return:        Статус пользователя в боте
         """
         if 'profiles' in self.user_data_cache[user_id]:
+            profiles_id = [profile['id'] for profile in self.user_data_cache[user_id]['profiles']]
             # Сохраняем результаты в бд
-            self.user_data.save_session_to_db(user_id, [profile['id'] for profile in
-                                                        self.user_data_cache[user_id]['profiles']])
+            self.user_data.save_session_to_db(user_id, profiles_id)
 
+            # Добавим список найденных пользователей, что бы не обращаться заново к базе
+            self.user_data_cache[user_id]['in_db'].extend(profiles_id)
+            print(self.user_data_cache[user_id]['in_db'])
         self.send_message(user_id, messages.final_status)
         return "final"
 
@@ -186,37 +198,43 @@ class VKinderBot:
         :param event: Событие
         """
         # Вернет None, если нет данных о пользователе
-        current_step = self.user_data_cache.get(event.user_id)
+        current_data = self.user_data_cache.get(event.user_id)
         # Если данных нет, проверим БД
-        if current_step is None:
+        if current_data is None:
             # Создадим словарь для пользователя в Кэше
-            self.user_data_cache[event.user_id] = {}
+            self.user_data_cache[event.user_id] = {'step': None}
             # Есть ли данные о пользователе
             self.user_data_cache[event.user_id]['in_db'] = self.user_data.get_user_data_from_db(event.user_id)
-            # Если есть данные, поздороваемся снова
+            # Если есть в базе данных, поздороваемся снова
             current_step = "again" if self.user_data_cache[event.user_id]['in_db'] else None
         else:
-            current_step = current_step['step']
+            # Если есть данные о пользователе
+            current_step = current_data['step']
 
         # Если начальный шаг, поздороваемся
         if current_step is None:
             self.send_message(event.user_id, messages.greet_status)
             next_step = self.process_age(event.user_id)
-        # Если пользователь вводит команду "еще", отправьте следующую анкету
-        elif event.text.lower() == "еще" and current_step == 'final':
-            next_profile = self.get_next_profile(event.user_id)
-            if next_profile:
-                top_photos = self.vkinder.get_top_photos(next_profile["id"])
-                self.send_photos_and_link(event.user_id, top_photos, f"https://vk.com/id{next_profile['id']}")
-                next_step = "final"
-            else:
-                self.send_message(event.user_id, 'Больше анкет нет. Хочешь еще? Напиши "Заново"')
-                next_step = None
-
+        elif event.text.lower() == "заново":
+            # Если пользователь хочет начать заново
+            self.send_message(event.user_id, messages.greet_again)
+            next_step = self.process_age(event.user_id)
         # Иначе поищем его статус
         elif self.is_valid_input(event.text, current_step):
-            if current_step == "again":
-                self.send_message(event.user_id, messages.greet_status)
+            if current_step == 'final':
+                # Если пользователь вводит команду "еще" и уже получал анекты,
+                # отправьте следующую анкету
+                if event.text.lower() == "еще":
+                    next_profile = self.get_next_profile(event.user_id)
+                    if next_profile:
+                        top_photos = self.vkinder.get_top_photos(next_profile["id"])
+                        self.send_photos_and_link(event.user_id, top_photos, f"https://vk.com/id{next_profile['id']}")
+                        next_step = "final"
+                    else:
+                        self.send_message(event.user_id, 'Больше анкет нет. Хочешь еще? Напиши "Заново"')
+                        next_step = "again"
+            elif current_step == "again":
+                self.send_message(event.user_id, messages.greet_again)
                 next_step = self.process_age(event.user_id)
             elif current_step == "age":
                 self.user_data_cache[event.user_id]["age"] = int(event.text)
@@ -264,31 +282,9 @@ class VKinderBot:
                 next_profile = self.get_next_profile(event.user_id)
                 if next_profile:
                     top_photos = self.vkinder.get_top_photos(next_profile["id"])
-                    self.send_photos_and_link(user_id, top_photos, f"https://vk.com/id{next_profile['id']}")
-                """
-                # Список пользователей для сохранения в бд
-                for_save = []
-                # Выводим первых n пользователей
-                for user in users:
-                    # Если для сохранения уже больше пользователей, чем нужно вывести, выйдем из цикла
-                    if len(for_save) > self.top_users:
-                        break
-                    # Если пользователь не скрыт и мы можем его вывести
-                    if not user.get('is_closed', True):
-                        if user['id'] not in self.user_data_cache[event.user_id]['in_db']:
-                            for_save.append(user['id'])
-                            top_photos = vkinder.get_top_photos(user["id"])
-                            self.send_photos_and_link(user_id, top_photos, f"https://vk.com/id{user['id']}")
-                
-                self.final_status(event.user_id)
-                # Сохраняем результаты в бд
-                self.user_data.save_session_to_db(user_id, for_save)
-                # Удалим данные о пользователе из кэша
-                del self.user_data_cache[user_id]
-                
-                # Выход из функции
-                return
-                """
+                    if top_photos:
+                        # Выдадим пользователя
+                        self.send_photos_and_link(user_id, top_photos, f"https://vk.com/id{next_profile['id']}")
             # Попрощаемся
             else:
                 self.send_message(event.user_id, messages.some_error)
@@ -323,10 +319,6 @@ class VKinderBot:
         :return:     True, если корректно, иначе False
         """
         if step == "again" or step == 'final':
-            print(step, 'asd')
-            print(text.lower() == 'заново')
-
-            print(text.lower())
             return text.lower() == 'заново'
         if step == "age":
             # Проверяем, что число, входит в промежуток доступных возрастов, а также
